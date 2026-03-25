@@ -240,6 +240,50 @@ export class IosRobot implements Robot {
 		const wda = await this.wda();
 		return await wda.getOrientation();
 	}
+
+	/**
+	 * Get device syslog with optional filtering
+	 * Uses go-ios syslog command
+	 * @param processName Optional process name to filter logs by
+	 * @param lines Number of lines to capture (approximate, syslog is streaming)
+	 */
+	public async getLogs(processName?: string, lines: number = 100): Promise<string> {
+		await this.assertTunnelRunning();
+
+		// go-ios syslog streams continuously, so we need to capture with a timeout
+		const { execSync } = await import("node:child_process");
+
+		try {
+			// Use timeout to limit capture duration (1 second should get recent logs)
+			const goIosPath = getGoIosPath();
+			const cmd = `timeout 1 ${goIosPath} syslog --udid ${this.deviceId} 2>/dev/null || true`;
+
+			// Run syslog with a short timeout and capture output
+			const output = execSync(cmd, {
+				maxBuffer: 1024 * 1024 * 4,
+				shell: "/bin/sh",
+				encoding: "utf-8"
+			});
+
+			let logLines = output.split("\n");
+
+			// Filter by process name if specified
+			if (processName) {
+				logLines = logLines.filter(line =>
+					line.toLowerCase().includes(processName.toLowerCase())
+				);
+			}
+
+			// Return last N lines
+			return logLines.slice(-lines).join("\n");
+		} catch (error: any) {
+			// If timeout killed it, that's expected
+			if (error.status === 124) {
+				return error.stdout?.toString() || "";
+			}
+			throw new ActionableError(`Failed to get device logs: ${error.message}`);
+		}
+	}
 }
 
 export class IosManager {

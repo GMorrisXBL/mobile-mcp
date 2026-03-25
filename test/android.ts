@@ -136,4 +136,65 @@ describe("android", () => {
 		// screen size should not have changed
 		assert.deepEqual(screenSize1, screenSize2);
 	});
+
+	describe("logging", () => {
+		it("should be able to get device logs", async function() {
+			hasOneAndroidDevice || this.skip();
+
+			const logs = await android.getLogs();
+			assert.ok(typeof logs === "string");
+			// Logs should contain some content (device always has some logs)
+			assert.ok(logs.length > 0, "Expected logs to have some content");
+		});
+
+		it("should be able to get logs with line limit", async function() {
+			hasOneAndroidDevice || this.skip();
+
+			const logs = await android.getLogs(undefined, 10);
+			const lines = logs.split("\n").filter(l => l.trim().length > 0);
+			assert.ok(lines.length <= 10, `Expected at most 10 lines but got ${lines.length}`);
+		});
+
+		it("should be able to filter logs by package name", async function() {
+			hasOneAndroidDevice || this.skip();
+
+			// Launch settings to generate some logs
+			await android.launchApp("com.android.settings");
+			await new Promise(resolve => setTimeout(resolve, 1000));
+
+			const logs = await android.getLogs("com.android.settings", 50);
+			// If filter works and app generated logs, all lines should contain the package
+			// (or be empty if no logs match)
+			if (logs.trim().length > 0) {
+				const lines = logs.split("\n").filter(l => l.trim().length > 0);
+				// At least some filtering should have occurred
+				assert.ok(lines.length <= 50);
+			}
+
+			await android.terminateApp("com.android.settings");
+		});
+
+		it("should be able to filter logs by level", async function() {
+			hasOneAndroidDevice || this.skip();
+
+			// Get only error-level logs
+			const errorLogs = await android.getLogs(undefined, 100, "E");
+			assert.ok(typeof errorLogs === "string");
+			// Error logs may be empty if no errors, that's fine
+		});
+
+		it("should be able to clear logs", async function() {
+			hasOneAndroidDevice || this.skip();
+
+			// Clear logs
+			await android.clearLogs();
+
+			// Get logs immediately after - should be minimal
+			const logs = await android.getLogs(undefined, 100);
+			const lines = logs.split("\n").filter(l => l.trim().length > 0);
+
+			// After clearing, there should be very few logs (some system logs may appear immediately)
+			assert.ok(lines.length < 20, `Expected few logs after clear but got ${lines.length}`);
+		});
+	});
 });

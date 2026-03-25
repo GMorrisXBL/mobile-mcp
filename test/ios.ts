@@ -25,4 +25,14 @@ describe("ios", async () => {
 		assert.equal(Math.ceil(pngSize.width / screenSize.scale), screenSize.width);
 		assert.equal(Math.ceil(pngSize.height / screenSize.scale), screenSize.height);
 	});
+
+	it("should be able to get device logs", async function() {
+		hasOneDevice || this.skip();
+		// getLogs streams syslog output for a short duration
+		const logs = await robot.getLogs();
+		// Should return a string (may be empty if no recent logs)
+		assert.ok(typeof logs === "string");
+		// iOS syslog typically contains timestamp patterns or process names
+		// We just verify it returns without error and is a string
+	});
 });

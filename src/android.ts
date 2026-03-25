@@ -398,6 +398,51 @@ export class AndroidRobot implements Robot {
 		this.adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", this.escapeShellText(url));
 	}
 
+	/**
+	 * Get device logs (logcat) with optional filtering
+	 * @param packageName Optional package name to filter logs by
+	 * @param lines Number of recent lines to return (default 100)
+	 * @param level Minimum log level: V(erbose), D(ebug), I(nfo), W(arn), E(rror), F(atal)
+	 */
+	public async getLogs(packageName?: string, lines: number = 100, level: string = "V"): Promise<string> {
+		// Clear and dump recent logs
+		const args = ["logcat", "-d", "-t", String(lines)];
+
+		// Add log level filter
+		if (level && level !== "V") {
+			args.push(`*:${level}`);
+		}
+
+		const output = this.adb("shell", ...args).toString();
+
+		// Filter by package if specified
+		if (packageName) {
+			// Get PID for the package
+			try {
+				const pidOutput = this.adb("shell", "pidof", packageName).toString().trim();
+				if (pidOutput) {
+					const pids = pidOutput.split(/\s+/);
+					const lines = output.split("\n");
+					const filtered = lines.filter(line => {
+						return pids.some(pid => line.includes(` ${pid} `));
+					});
+					return filtered.join("\n");
+				}
+			} catch {
+				// pidof might fail if app isn't running, return all logs
+			}
+		}
+
+		return output;
+	}
+
+	/**
+	 * Clear the logcat buffer
+	 */
+	public async clearLogs(): Promise<void> {
+		this.adb("logcat", "-c");
+	}
+
 	private isAscii(text: string): boolean {
 		return /^[\x00-\x7F]*$/.test(text);
 	}

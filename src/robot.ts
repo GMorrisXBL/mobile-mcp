@@ -144,4 +144,17 @@ export interface Robot {
 	 * Get the current screen orientation.
 	 */
 	getOrientation(): Promise<Orientation>;
+
+	/**
+	 * Get device logs (optional - not all implementations support this).
+	 * @param filter Optional filter (process name or package name)
+	 * @param lines Number of log lines to return
+	 * @param level Optional log level filter (Android: V, D, I, W, E, F)
+	 */
+	getLogs?(filter?: string, lines?: number, level?: string): Promise<string>;
+
+	/**
+	 * Clear device logs (optional - not all implementations support this).
+	 */
+	clearLogs?(): Promise<void>;
 }

@@ -14,6 +14,7 @@ import { isScalingAvailable, Image } from "./image-utils";
 import { Mobilecli } from "./mobilecli";
 import { MobileDevice } from "./mobile-device";
 import { validateOutputPath, validateFileExtension } from "./utils";
+import { BrowserStackManager, BrowserStackRobot, getBrowserStackCredentials, isBrowserStackConfigured } from "./browserstack";
 
 const ALLOWED_SCREENSHOT_EXTENSIONS = [".png", ".jpg", ".jpeg"];
 const ALLOWED_RECORDING_EXTENSIONS = [".mp4"];
@@ -90,6 +91,9 @@ export const createMcpServer = (): McpServer => {
 	const mobilecli = new Mobilecli();
 	const activeRecordings = new Map<string, ActiveRecording>();
 
+	// Track active BrowserStack sessions
+	const browserStackSessions = new Map<string, BrowserStackRobot>();
+
 	const ensureMobilecliAvailable = (): void => {
 		try {
 			const version = mobilecli.getVersion();
@@ -102,6 +106,18 @@ export const createMcpServer = (): McpServer => {
 	};
 
 	const getRobotFromDevice = (deviceId: string): Robot => {
+
+		// Check if it's a BrowserStack session (format: browserstack-session:sessionId)
+		if (deviceId.startsWith("browserstack-session:")) {
+			const sessionId = deviceId.replace("browserstack-session:", "");
+			const robot = browserStackSessions.get(sessionId);
+			if (robot) {
+				return robot;
+			}
+			throw new ActionableError(
+				`BrowserStack session "${sessionId}" not found. Use browserstack_start_session to create a session first.`
+			);
+		}
 
 		// from now on, we must have mobilecli working
 		ensureMobilecliAvailable();
@@ -460,11 +476,11 @@ export const createMcpServer = (): McpServer => {
 
 	tool(
 		"mobile_open_url",
-		"Open URL",
-		"Open a URL in browser on device",
+		"Open URL / Deep Link",
+		"Open a URL or deep link on the device. Supports http/https URLs (opens in browser) and custom URL schemes for deep linking into apps (e.g., 'myapp://path/to/screen', 'fb://profile', 'twitter://user?screen_name=example').",
 		{
 			device: z.string().describe("The device identifier to use. Use mobile_list_available_devices to find which devices are available to you."),
-			url: z.string().describe("The URL to open"),
+			url: z.string().describe("The URL or deep link to open. Can be http/https for web pages or a custom scheme (e.g., 'myapp://...') for deep links."),
 		},
 		{ destructiveHint: true },
 		async ({ device, url }) => {
@@ -634,6 +650,58 @@ export const createMcpServer = (): McpServer => {
 	);
 
 	tool(
+		"mobile_get_device_logs",
+		"Get Device Logs",
+		"Get device logs (logcat for Android, syslog for iOS). Useful for debugging app crashes, errors, and behavior. Returns recent log entries that can be filtered by app/process name and log level.",
+		{
+			device: z.string().describe("The device identifier to use. Use mobile_list_available_devices to find which devices are available to you."),
+			filter: z.string().optional().describe("Filter logs by package name (Android) or process name (iOS). If not specified, returns all logs."),
+			lines: z.coerce.number().optional().describe("Number of log lines to return (default: 100, max: 1000)"),
+			level: z.enum(["V", "D", "I", "W", "E", "F"]).optional().describe("Minimum log level (Android only): V=Verbose, D=Debug, I=Info, W=Warn, E=Error, F=Fatal. Default: V (all logs)"),
+		},
+		{ readOnlyHint: true },
+		async ({ device, filter, lines, level }) => {
+			const robot = getRobotFromDevice(device);
+
+			if (!robot.getLogs) {
+				throw new ActionableError("This device does not support log retrieval. Logs are available for local Android and iOS devices only.");
+			}
+
+			const numLines = Math.min(lines || 100, 1000);
+			const logs = await robot.getLogs(filter, numLines, level);
+
+			if (!logs || logs.trim().length === 0) {
+				return filter
+					? `No logs found matching filter "${filter}". Try without a filter or check if the app is running.`
+					: "No logs found. The log buffer may be empty.";
+			}
+
+			const lineCount = logs.split("\n").filter(l => l.trim()).length;
+			return `Found ${lineCount} log entries${filter ? ` matching "${filter}"` : ""}:\n\n${logs}`;
+		}
+	);
+
+	tool(
+		"mobile_clear_device_logs",
+		"Clear Device Logs",
+		"Clear the device log buffer. Useful before reproducing a bug to get clean logs. Only supported on Android devices.",
+		{
+			device: z.string().describe("The device identifier to use. Use mobile_list_available_devices to find which devices are available to you."),
+		},
+		{ destructiveHint: true },
+		async ({ device }) => {
+			const robot = getRobotFromDevice(device);
+
+			if (!robot.clearLogs) {
+				throw new ActionableError("This device does not support clearing logs. Log clearing is available for Android devices only.");
+			}
+
+			await robot.clearLogs();
+			return "Device log buffer cleared successfully. New logs will now only contain events from this point forward.";
+		}
+	);
+
+	tool(
 		"mobile_start_screen_recording",
 		"Start Screen Recording",
 		"Start recording the screen of a mobile device. The recording runs in the background until stopped with mobile_stop_screen_recording. Returns the path where the recording will be saved.",
@@ -724,6 +792,137 @@ export const createMcpServer = (): McpServer => {
 			return `Recording stopped. File: ${outputPath} (${fileSizeMB} MB, ~${durationSeconds}s)`;
 		}
 	);
+
+	// BrowserStack tools - only register if credentials are configured
+	if (isBrowserStackConfigured()) {
+		const bsCredentials = getBrowserStackCredentials()!;
+		const bsManager = new BrowserStackManager(bsCredentials);
+
+		tool(
+			"browserstack_list_devices",
+			"List BrowserStack Devices",
+			"List all available devices on BrowserStack for remote testing. Returns device names, OS versions, and device IDs that can be used to start a session.",
+			{},
+			{ readOnlyHint: true },
+			async ({}) => {
+				const devices = await bsManager.getAvailableDevices();
+				const grouped = {
+					ios: devices.filter(d => d.os === "ios"),
+					android: devices.filter(d => d.os === "android"),
+				};
+				return JSON.stringify({
+					message: `Found ${devices.length} BrowserStack devices (${grouped.ios.length} iOS, ${grouped.android.length} Android)`,
+					devices: devices.slice(0, 50), // Limit to first 50 to avoid huge responses
+					note: devices.length > 50 ? `Showing first 50 of ${devices.length} devices` : undefined,
+				});
+			}
+		);
+
+		tool(
+			"browserstack_start_session",
+			"Start BrowserStack Session",
+			"Start a new BrowserStack session on a remote device. Use browserstack_list_devices to find available devices. Returns a session ID that can be used as a device ID with other mobile_* tools.",
+			{
+				device: z.string().describe("Device name (e.g., 'iPhone 14 Pro', 'Samsung Galaxy S23')"),
+				os: z.enum(["ios", "android"]).describe("Operating system"),
+				os_version: z.string().describe("OS version (e.g., '16', '13.0')"),
+				app_url: z.string().optional().describe("BrowserStack app URL (bs://xxx) to install. Get this from browserstack_upload_app or use BROWSERSTACK_APP_URL env var."),
+			},
+			{ destructiveHint: true },
+			async ({ device, os, os_version, app_url }) => {
+				const sessionId = await bsManager.createSession(device, os, os_version, app_url);
+				const robot = new BrowserStackRobot(bsCredentials, sessionId);
+				browserStackSessions.set(sessionId, robot);
+
+				const deviceId = `browserstack-session:${sessionId}`;
+				return JSON.stringify({
+					message: `BrowserStack session started successfully`,
+					device_id: deviceId,
+					session_id: sessionId,
+					device: device,
+					os: os,
+					os_version: os_version,
+					instructions: `Use "${deviceId}" as the device parameter for mobile_* tools (e.g., mobile_take_screenshot, mobile_tap, etc.)`,
+				});
+			}
+		);
+
+		tool(
+			"browserstack_stop_session",
+			"Stop BrowserStack Session",
+			"Stop an active BrowserStack session and release the device.",
+			{
+				session_id: z.string().describe("The session ID returned from browserstack_start_session (or the full device ID like 'browserstack-session:xxx')"),
+			},
+			{ destructiveHint: true },
+			async ({ session_id }) => {
+				// Handle both formats: "browserstack-session:xxx" and just "xxx"
+				const sessionId = session_id.startsWith("browserstack-session:")
+					? session_id.replace("browserstack-session:", "")
+					: session_id;
+
+				const robot = browserStackSessions.get(sessionId);
+				if (!robot) {
+					throw new ActionableError(`BrowserStack session "${sessionId}" not found. It may have already been stopped.`);
+				}
+
+				await robot.close();
+				browserStackSessions.delete(sessionId);
+
+				return `BrowserStack session ${sessionId} stopped successfully. The device has been released.`;
+			}
+		);
+
+		tool(
+			"browserstack_upload_app",
+			"Upload App to BrowserStack",
+			"Upload an app file (.apk or .ipa) to BrowserStack for testing. Returns a bs:// URL that can be used to start sessions with the app.",
+			{
+				path: z.string().describe("Local path to the app file (.apk for Android, .ipa for iOS)"),
+			},
+			{ destructiveHint: true },
+			async ({ path: appPath }) => {
+				if (!fs.existsSync(appPath)) {
+					throw new ActionableError(`App file not found at path: ${appPath}`);
+				}
+
+				const ext = appPath.toLowerCase();
+				if (!ext.endsWith(".apk") && !ext.endsWith(".ipa")) {
+					throw new ActionableError(`Invalid app file. Must be .apk (Android) or .ipa (iOS). Got: ${appPath}`);
+				}
+
+				const appUrl = await bsManager.uploadApp(appPath);
+				return JSON.stringify({
+					message: "App uploaded successfully to BrowserStack",
+					app_url: appUrl,
+					instructions: `Use this app_url with browserstack_start_session to test your app on a device.`,
+				});
+			}
+		);
+
+		tool(
+			"browserstack_list_sessions",
+			"List Active BrowserStack Sessions",
+			"List all active BrowserStack sessions that have been started in this server instance.",
+			{},
+			{ readOnlyHint: true },
+			async ({}) => {
+				const sessions = Array.from(browserStackSessions.keys()).map(sessionId => ({
+					session_id: sessionId,
+					device_id: `browserstack-session:${sessionId}`,
+				}));
+
+				if (sessions.length === 0) {
+					return "No active BrowserStack sessions. Use browserstack_start_session to start one.";
+				}
+
+				return JSON.stringify({
+					message: `Found ${sessions.length} active BrowserStack session(s)`,
+					sessions,
+				});
+			}
+		);
+	}
 
 	return server;
 };

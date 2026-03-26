@@ -118,6 +118,28 @@ Or if installed via uvx:
 | `browserstack_upload_app` | Upload app for testing |
 | `browserstack_list_sessions` | List active sessions |
 
+## Docker
+
+Run the MCP server in a container:
+
+```bash
+# Build the image
+docker build -t mobile-mcp .
+
+# Run with HTTP transport
+docker run -p 8080:8080 mobile-mcp
+
+# With BrowserStack credentials
+docker run -p 8080:8080 \
+  -e BROWSERSTACK_USERNAME=your_username \
+  -e BROWSERSTACK_ACCESS_KEY=your_key \
+  mobile-mcp
+
+# Custom configuration
+docker run -p 9000:9000 mobile-mcp \
+  --transport http --host 0.0.0.0 --port 9000 --log-level DEBUG
+```
+
 ## CLI Options
 
 ```

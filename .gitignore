@@ -2,6 +2,10 @@
 .vscode
 .idea
 
+# Node (semantic-release)
+node_modules/
+package-lock.json
+
 # Python
 __pycache__/
 *.py[cod]

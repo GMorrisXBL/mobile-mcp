@@ -1,0 +1,12 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    uses: Dis-Chem/github-actions-library/.github/workflows/semantic-release.yaml@main
+    secrets:
+      github_access_token: ${{ secrets.GITHUB_TOKEN }}
